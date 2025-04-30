@@ -1,112 +1,118 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
+	"sync"
 
 	"github.com/gorilla/websocket"
 )
 
 type Message struct {
-	Type     string `json:"type"`
-	Username string `json:"username,omitempty"`
-	Text     string `json:"text,omitempty"`
-	OldName  string `json:"oldName,omitempty"`
-	NewName  string `json:"newName,omitempty"`
+	Type     string   `json:"type"`
+	Username string   `json:"username,omitempty"`
+	Text     string   `json:"text,omitempty"`
+	NewName  string   `json:"newName,omitempty"`
+	OldName  string   `json:"oldName,omitempty"`
+	Users    []string `json:"users,omitempty"`
 }
 
 var (
-	clients   = make(map[*websocket.Conn]string)
-	usernames = make(map[string]bool)
-	upgrader  = websocket.Upgrader{
+	clients      = make(map[*websocket.Conn]string)
+	clientsMutex = sync.Mutex{}
+	upgrader     = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return true },
 	}
 )
 
+func main() {
+	http.HandleFunc("/ws", handleConnections)
+	http.Handle("/", http.FileServer(http.Dir("./static")))
+
+	log.Println("Server started on :8080")
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+
 func handleConnections(w http.ResponseWriter, r *http.Request) {
-	ws, err := upgrader.Upgrade(w, r, nil)
+	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Println("WebSocket upgrade error:", err)
+		log.Println("Upgrade:", err)
 		return
 	}
-	defer ws.Close()
+	defer conn.Close()
 
-	var currentName string
+	var username string
 
 	for {
-		var msg Message
-		err := ws.ReadJSON(&msg)
+		_, msg, err := conn.ReadMessage()
 		if err != nil {
-			log.Println("Read error:", err)
-			delete(clients, ws)
-			if currentName != "" {
-				delete(usernames, currentName)
-			}
 			break
 		}
 
-		switch msg.Type {
+		var m Message
+		if err := json.Unmarshal(msg, &m); err != nil {
+			continue
+		}
+
+		switch m.Type {
 		case "join":
-			if usernames[msg.Username] {
-				ws.WriteJSON(map[string]string{
-					"type":    "error",
-					"message": "Username already taken!",
-				})
+			clientsMutex.Lock()
+			if usernameTaken(m.Username) {
+				conn.WriteJSON(Message{Type: "error", Text: "Username already taken"})
+				clientsMutex.Unlock()
 				continue
 			}
-			currentName = msg.Username
-			clients[ws] = msg.Username
-			usernames[msg.Username] = true
+			username = m.Username
+			clients[conn] = username
+			clientsMutex.Unlock()
+
+			broadcastUserList()
 
 		case "chat":
-			broadcastMessage := Message{
-				Type:     "chat",
-				Username: msg.Username,
-				Text:     msg.Text,
-			}
-			broadcastJSON(broadcastMessage)
+			clientsMutex.Lock()
+			broadcast(Message{Type: "chat", Username: m.Username, Text: m.Text})
+			clientsMutex.Unlock()
 
 		case "rename":
-			if usernames[msg.NewName] {
-				ws.WriteJSON(map[string]string{
-					"type":    "error",
-					"message": "That name is already taken.",
-				})
+			clientsMutex.Lock()
+			if usernameTaken(m.NewName) {
+				conn.WriteJSON(Message{Type: "error", Text: "Username already taken"})
 			} else {
-				delete(usernames, msg.OldName)
-				usernames[msg.NewName] = true
-				clients[ws] = msg.NewName
-				currentName = msg.NewName
-
-				ws.WriteJSON(map[string]string{
-					"type":    "rename_success",
-					"newName": msg.NewName,
-				})
+				clients[conn] = m.NewName
+				username = m.NewName
+				conn.WriteJSON(Message{Type: "rename_success", NewName: m.NewName})
+				broadcastUserList()
 			}
+			clientsMutex.Unlock()
 		}
+	}
+
+	clientsMutex.Lock()
+	delete(clients, conn)
+	clientsMutex.Unlock()
+	broadcastUserList()
+}
+
+func broadcast(msg Message) {
+	for conn := range clients {
+		conn.WriteJSON(msg)
 	}
 }
 
-func broadcastJSON(msg Message) {
-	for client := range clients {
-		err := client.WriteJSON(msg)
-		if err != nil {
-			log.Println("Broadcast error:", err)
-			client.Close()
-			delete(usernames, clients[client])
-			delete(clients, client)
-		}
+func broadcastUserList() {
+	users := []string{}
+	for _, name := range clients {
+		users = append(users, name)
 	}
+	broadcast(Message{Type: "user_list", Users: users})
 }
 
-func main() {
-	fs := http.FileServer(http.Dir("./static"))
-	http.Handle("/", fs)
-	http.HandleFunc("/ws", handleConnections)
-
-	log.Println("Server started on :8080")
-	err := http.ListenAndServe(":8080", nil)
-	if err != nil {
-		log.Fatal("ListenAndServe error:", err)
+func usernameTaken(name string) bool {
+	for _, n := range clients {
+		if n == name {
+			return true
+		}
 	}
+	return false
 }

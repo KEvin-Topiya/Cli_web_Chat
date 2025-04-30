@@ -32,11 +32,40 @@
     #usernameDisplay {
       font-size: 1rem;
       opacity: 0.9;
+      cursor: pointer;
+    }
+
+    #chatWrapper {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    #userList {
+      width: 20%;
+      background: #f1f5f9;
+      border-right: 1px solid #ddd;
+      padding: 1rem;
+      overflow-y: auto;
+    }
+
+    #userList h3 {
+      margin-top: 0;
+      font-size: 1.1rem;
+      border-bottom: 1px solid #ccc;
+      padding-bottom: 0.5rem;
+    }
+
+    #userList ul {
+      list-style: none;
+      padding: 0;
+    }
+
+    #userList li {
+      padding: 0.3rem 0;
     }
 
     #chat {
-      margin: auto;
-      width: 50%;
       flex: 1;
       padding: 1rem 1.5rem;
       overflow-y: auto;
@@ -89,21 +118,37 @@
       background-color: #303f9f;
     }
 
-    /* Mobile responsiveness */
     @media (max-width: 600px) {
       header, #chat, #inputArea {
         padding: 1rem;
+      }
+
+      #chatWrapper {
+        flex-direction: column;
+      }
+
+      #userList {
+        width: 100%;
+        border-right: none;
+        border-bottom: 1px solid #ddd;
       }
     }
   </style>
 </head>
 <body>
   <header>
-    <div>VibeChat </div>
-    <div id="usernameDisplay"></div>
+    <div>VibeChat</div>
+    <div id="usernameDisplay" title="Click to change name"></div>
   </header>
 
-  <div id="chat"></div>
+  <div id="chatWrapper">
+    <div id="userList">
+      <h3>Online Users</h3>
+      <ul id="usersUl"></ul>
+    </div>
+
+    <div id="chat"></div>
+  </div>
 
   <div id="inputArea">
     <input id="msg" type="text" placeholder="Type your message..." autocomplete="off" />
@@ -113,19 +158,21 @@
   <script>
     let username = prompt("Enter your username") || "Anonymous";
     document.getElementById("usernameDisplay").innerText = `👤 ${username}`;
+
     const chat = document.getElementById("chat");
     const msgInput = document.getElementById("msg");
     const usernameDisplay = document.getElementById("usernameDisplay");
-  
+    const usersUl = document.getElementById("usersUl");
+
     const socket = new WebSocket("ws://" + location.host + "/ws");
-  
+
     socket.addEventListener("open", () => {
       socket.send(JSON.stringify({ type: "join", username }));
     });
-  
+
     socket.addEventListener("message", function (event) {
       const data = JSON.parse(event.data);
-  
+
       if (data.type === "chat") {
         const msg = `[${data.username}]: ${data.text}`;
         const div = document.createElement("div");
@@ -135,37 +182,42 @@
         chat.appendChild(div);
         chat.scrollTop = chat.scrollHeight;
       }
-  
+
       if (data.type === "error") {
         alert(data.message);
       }
-  
+
       if (data.type === "rename_success") {
         username = data.newName;
         usernameDisplay.innerText = `👤 ${username}`;
       }
+
+      if (data.type === "user_list") {
+        usersUl.innerHTML = "";
+        data.users.forEach((user) => {
+          const li = document.createElement("li");
+          li.textContent = user;
+          usersUl.appendChild(li);
+        });
+      }
     });
-  
+
     function sendMessage() {
       const text = msgInput.value.trim();
       if (text === "") return;
       socket.send(JSON.stringify({ type: "chat", username, text }));
       msgInput.value = "";
     }
-  
+
     msgInput.addEventListener("keypress", function (e) {
       if (e.key === "Enter") sendMessage();
     });
-  
-    usernameDisplay.style.cursor = "pointer";
-    usernameDisplay.title = "Click to change name";
-  
+
     usernameDisplay.addEventListener("click", () => {
       const newName = prompt("Enter new username:");
       if (!newName || newName === username) return;
       socket.send(JSON.stringify({ type: "rename", oldName: username, newName }));
     });
   </script>
-  
 </body>
 </html>
